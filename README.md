@@ -1,20 +1,140 @@
 # NewsFollower
 
-Keeps only the news and price action worth reacting to. Two independent
-filters, joined by a correlation window:
+A free market squawk. Polls 22 key-less public feeds, keeps only the headlines
+and price moves worth reacting to, formats them as wire-style tape lines, and
+optionally reads them aloud.
 
-1. **Criticality filter** — scores headlines and drops previews, opinion,
-   analyst chatter, recaps and syndicated duplicates.
+```
+*(US) FED'S WARSH: CENTRAL BANK STILL HAS WORK TO DO ON INFLATION
+*(US) CPI M/M 0.4% VS. EXP. 0.2% (PREV. 0.3%)
+-(OPEC) CL: OPEC+ ANNOUNCES SURPRISE PRODUCTION CUT OF 1 MLN BPD
+*NVDA ▼ 3.10% IN 60S (8.4 SIGMA) - NO HEADLINE
+```
+
+Three layers:
+
+1. **Criticality filter** — scores headlines, drops previews, opinion, analyst
+   chatter, agency boilerplate and syndicated duplicates.
 2. **Quick-move detector** — flags price action that is fast *and* unusual for
    that specific symbol, rather than large in absolute terms.
+3. **Squawk layer** — free feeds in, wire-formatted spoken tape out.
 
-Pure stdlib, no dependencies. `pytest` only for the tests.
+Pure stdlib, no dependencies, no API keys. `pytest` only for the tests.
 
 ## Quick start
 
 ```bash
-python -m newsfollower.cli   # replay demo on real headlines from Aug 2026
+# See how the filter treats the news cycle as it stands right now
+python -m newsfollower.squawk.runner --replay
+
+# Run it live (Ctrl-C to stop); --speak reads alerts aloud
+python -m newsfollower.squawk.runner --speak
+
+# Verify every registered source still works
+python -m newsfollower.squawk.runner --check
+
+# Offline demo of the filters on known headlines
+python -m newsfollower.cli
 ```
+
+Two feeds — BLS and SEC EDGAR — require a contact address in the User-Agent as
+their stated fair-use condition, and 403 without one:
+
+```bash
+export NEWSFOLLOWER_CONTACT="you@example.com"
+```
+
+The other 20 work anonymously.
+
+## The squawk
+
+```bash
+python -m newsfollower.squawk.runner \
+    --speak \
+    --watchlist NVDA,TSN \
+    --symbols '^GSPC,^VIX,CL=F,ZW=F' \
+    --min-priority IMPORTANT \
+    --log ~/squawk.jsonl
+```
+
+| Flag | Effect |
+|---|---|
+| `--replay` | Run current feed contents through the filter and exit — the tuning tool |
+| `--check` | Verify every source parses; exit code is the failure count |
+| `--speak` | Read alerts aloud via the host's TTS |
+| `--primary-only` | Central banks, statistical agencies and exchanges only |
+| `--watchlist` | Tickers to escalate |
+| `--min-priority` | `NORMAL` to see near-misses, `CRITICAL` for headlines only |
+| `--log` | Append every emitted line as JSONL |
+| `--prime` | Seconds spent absorbing feed backlog before going live |
+
+**Startup primes every feed.** The first poll of an RSS feed returns twenty
+historical items; reading yesterday's news aloud as if it were breaking is the
+fastest way to make a squawk untrustworthy. Priming marks them seen without
+emitting, and the historical price bars collected during priming warm the
+detector's per-symbol volatility baselines.
+
+### Formatting
+
+A squawk line is not a headline. It is stripped to the claim, attributed,
+region-tagged and short enough to read aloud in about three seconds:
+
+| In | Out |
+|---|---|
+| `Fed Chair Warsh says central bank still has work to do on inflation` | `*(US) FED'S WARSH: CENTRAL BANK STILL HAS WORK TO DO ON INFLATION` |
+| `Kansas City Fed's Schmid says inflation 'stubborn' and 'sticky'` | `-(US) FED'S SCHMID: INFLATION 'STUBBORN' AND 'STICKY'` |
+| `BREAKING: OPEC+ announces surprise production cut of 1 million barrels per day - Reuters` | `*(OPEC) OPEC+ ANNOUNCES SURPRISE PRODUCTION CUT OF 1 MLN BPD` |
+| `Nvidia guides Q3 revenue to $108 billion` | `-NVDA: NVIDIA GUIDES Q3 REVENUE TO USD 108BLN` |
+
+`*` marks a line to act on now, `-` everything else. Region comes from the
+speaking institution, else the earliest country reference in the text — so
+"Ukrainian strikes on Russian ports" is a `(UA)` story, not `(RU)`.
+
+For text-to-speech the abbreviations are expanded back out: a voice saying
+"B-P-S" is worse than one saying "basis points".
+
+### Economic releases
+
+A data print is the one headline whose importance is fully computable, so it
+gets its own path — actual, consensus, prior, and the miss expressed in units
+of that indicator's own typical surprise:
+
+```
+*(US) CPI M/M 0.4% VS. EXP. 0.2% (PREV. 0.3%)      2.0 sigma -> CRITICAL
+-(US) NONFARM PAYROLLS 142K VS. EXP. 165K          0.4 sigma -> NORMAL
+ (US) JOBLESS CLAIMS 221K VS. EXP. 225K            0.3 sigma -> LOW
+```
+
+Calibration lives in `squawk/calendar.INDICATORS` as
+`(typical surprise, market weight)`. A 0.2pp CPI miss and a 60k payrolls miss
+both come out around 1 sigma; weight is how much the tape cares at all, so an
+unrecognised series has to miss by a lot before it interrupts anything.
+
+## Sources
+
+22 verified free feeds, no keys. `--check` re-verifies them all.
+
+| Tier | Sources |
+|---|---|
+| **Primary** | Fed (press, speeches), ECB, Bank of England (news, publications), BLS, Census, SEC EDGAR 8-K, Nasdaq trade halts, EIA |
+| **Wires / majors** | CNBC (top, economy, finance, earnings), MarketWatch (real-time, top), FT |
+| **Aggregators** | Yahoo Finance, Investing.com, BBC, Guardian, NYT |
+| **Prices** | Yahoo 1-minute bars (equities, indices, futures, FX), Coinbase (crypto) |
+
+Two known-dead sources stay in the registry so the gap is visible rather than
+forgotten: **Reuters** retired its public RSS with no free replacement, and
+**USDA** (WASDE) 403s any non-browser User-Agent.
+
+Yahoo bars lag and get revised, so treat a quick-move alert sourced from them
+as "go look", not "go trade". The last bar of a live session is always withheld
+because it is still forming.
+
+Polling is conditional: every request carries `ETag`/`If-Modified-Since`, so an
+unchanged feed costs a 304 and no body. In a 150-second live run, 82 of 168
+polls were 304s. Failures back off exponentially with jitter and respect
+`Retry-After`.
+
+## Library use
 
 ```python
 from newsfollower import NewsFollower, NewsItem, Tick, PipelineConfig, NewsConfig
@@ -72,6 +192,12 @@ score = (category_weight + surprise_bonus + magnitude_bonus - noise_penalty)
 - **Noise penalty** — `what to expect`, `history shows`, `3 reasons`,
   `could`, `analysts say`, `week ahead`, `reportedly`. These are the classic
   false positives.
+- **Admin penalty and boilerplate drop** — central banks publish far more
+  administrative output than monetary news, on the same feed with the same
+  authority. Merger approvals, enforcement actions, task forces and advisory
+  councils are penalised heavily; schedules, advisories, "key takeaways" and
+  "in charts" are dropped outright. Without this, six of the first eleven
+  lines on a live tape were Fed bank-merger approvals.
 - **Staleness** — score decays linearly over `max_age_s` (default 30 min) and
   is dropped past it. A 25-minute-old "breaking" headline is not a trade.
 - **Dedup** — headline shingles compared by Jaccard *and* containment, so the
@@ -114,14 +240,25 @@ pattern of selling the margin line and then buying the revenue guide.
 
 ```
 newsfollower/
-  models.py        NewsItem, Tick, Move, Alert, Priority
-  config.py        all rules and thresholds
-  criticality.py   headline scoring
-  price_action.py  streaming quick-move detector
-  dedup.py         shingle + containment de-duplication
-  pipeline.py      NewsFollower: joins the two filters
-  cli.py           replay demo
-briefs/            dated market briefs
+  models.py          NewsItem, Tick, Move, Alert, Priority
+  config.py          all rules and thresholds
+  criticality.py     headline scoring
+  price_action.py    streaming quick-move detector
+  dedup.py           shingle + containment de-duplication
+  pipeline.py        NewsFollower: joins the two filters
+  cli.py             offline demo
+  feeds/
+    http.py          conditional-GET client with backoff
+    rss.py           RSS 2.0 / Atom parsing
+    sources.py       the 22-source registry
+    prices.py        Yahoo bars, Coinbase ticker
+  squawk/
+    format.py        headline -> wire-style squawk line
+    calendar.py      economic releases, actual vs expected
+    audio.py         text-to-speech with priority preemption
+    tape.py          terminal tape + JSONL session log
+    runner.py        the service, --check and --replay
+briefs/              dated market briefs
 tests/
 ```
 
@@ -140,14 +277,38 @@ and `Tick` and call `on_news` / `on_tick`. Two things to get right:
 pip install pytest && python -m pytest tests -q
 ```
 
-Covers the scoring rules, the false positives that motivated them, dedup
-behaviour, and the price-action edge cases (warmup, cooldown, per-symbol
-baselines, volatile-symbol suppression, reversal flagging).
+73 tests covering the scoring rules and the false positives that motivated
+them, dedup behaviour, price-action edge cases (warmup, cooldown, per-symbol
+baselines, volatile-symbol suppression, reversal flagging), squawk formatting
+and attribution, release calibration, and feed parsing.
+
+The feed tests are offline — RSS/Atom fixtures and a fake HTTP client — so the
+suite does not depend on the internet. Use `--check` to test the real sources.
 
 ## Current tuning
 
-The demo replays five genuine market-moving headlines from the week ending
-2026-08-28 alongside five preview/opinion/duplicate items from the same feeds.
-It keeps 5 of 10 — the five real ones — and reports why it dropped each of the
-others. See [`briefs/2026-08-29-breaking-news.md`](briefs/2026-08-29-breaking-news.md)
-for the stories themselves.
+The offline demo replays five genuine market-moving headlines from the week
+ending 2026-08-28 alongside five preview/opinion/duplicate items from the same
+feeds. It keeps the five real ones and reports why it dropped the rest. See
+[`briefs/2026-08-29-breaking-news.md`](briefs/2026-08-29-breaking-news.md) for
+the stories themselves.
+
+Against the live feeds, `--replay` over 589 items currently emits 9 lines at
+`NORMAL` and 5 at `IMPORTANT`. Run it yourself before trusting the thresholds:
+the phrase lists are curated and inspectable, which makes coverage gaps real.
+Every drop is logged in `follower.dropped` with the reason, so a missed story
+is diagnosable rather than mysterious.
+
+## Honest limitations
+
+- **No true wire.** Reuters, Bloomberg and Dow Jones newswires are the actual
+  source of a professional squawk's speed edge, and none is free. Everything
+  here is seconds-to-minutes behind a real terminal.
+- **Polling, not streaming.** Feeds are polled on a 10-60s floor. A commercial
+  squawk pushes.
+- **Keyword rules.** Categories are curated phrase lists. Deliberately
+  inspectable and cheap, but they miss phrasings nobody anticipated — the
+  Black Sea headline initially scored zero because the list had "shipments
+  halted" and the headline said "halt shipments".
+- **Yahoo bars are not a market data feed.** They lag, they get revised, and
+  they cover only what Yahoo covers.

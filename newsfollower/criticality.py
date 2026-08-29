@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import functools
 import re
 import time
 from dataclasses import dataclass
 
 from .config import (
+    ADMIN_PENALTY,
+    ADMIN_PHRASES,
+    BOILERPLATE_PHRASES,
     CATEGORY_RULES,
     DEFAULT_SOURCE_WEIGHT,
     NOISE_PENALTY,
@@ -31,15 +35,16 @@ _MONEY_SCALE = {"million": 1e6, "mn": 1e6, "billion": 1e9, "bn": 1e9,
                 "trillion": 1e12, "tn": 1e12}
 
 
+@functools.lru_cache(maxsize=2048)
+def _phrase_pattern(phrase: str) -> re.Pattern[str]:
+    # Word-boundary anchored so `cpi` does not fire inside `recipient`, with an
+    # optional trailing plural so one entry covers "rate cut" / "rate cuts" and
+    # "enforcement action" / "enforcement actions".
+    return re.compile(r"(?<!\w)" + re.escape(phrase) + r"s?(?!\w)")
+
+
 def _phrase_hits(text: str, phrases: tuple[str, ...]) -> list[str]:
-    """Substring match, but anchored on word boundaries to avoid `cpi` in
-    `recipient` or `ap` in `apple`."""
-    hits = []
-    for p in phrases:
-        pattern = r"(?<!\w)" + re.escape(p) + r"(?!\w)"
-        if re.search(pattern, text):
-            hits.append(p)
-    return hits
+    return [p for p in phrases if _phrase_pattern(p).search(text)]
 
 
 @dataclass
@@ -115,6 +120,11 @@ def score_news(item: NewsItem, cfg: NewsConfig | None = None,
     now = time.time() if now is None else now
     text = item.text.lower()
 
+    boilerplate = _phrase_hits(text, BOILERPLATE_PHRASES)
+    if boilerplate:
+        return NewsScore(0.0, Priority.DROP, (),
+                         f"boilerplate: {boilerplate[0]}")
+
     categories: list[str] = []
     base = 0.0
     for name, weight, phrases in CATEGORY_RULES:
@@ -137,6 +147,9 @@ def score_news(item: NewsItem, cfg: NewsConfig | None = None,
     raw += SURPRISE_BONUS if surprise else 0.0
     raw += mag_bonus
     raw -= NOISE_PENALTY * min(2, len(noise))
+
+    admin = _phrase_hits(text, ADMIN_PHRASES)
+    raw -= ADMIN_PENALTY if admin else 0.0
 
     # Multiple independent categories in one headline (e.g. a central bank
     # story that also carries a macro print) is a genuine escalation.
@@ -174,6 +187,8 @@ def score_news(item: NewsItem, cfg: NewsConfig | None = None,
         bits.append(f"magnitude+{mag_bonus:.0f}")
     if noise:
         bits.append(f"noise:{','.join(noise[:2])}")
+    if admin:
+        bits.append(f"admin:{admin[0]}")
     if age > 60:
         bits.append(f"age {age / 60:.0f}m")
 

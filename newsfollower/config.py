@@ -25,6 +25,11 @@ SOURCE_TIERS: dict[str, float] = {
     "treasury.gov": 1.00,
     "opec.org": 1.00,
     "company-ir": 1.00,
+    "ecb": 1.00,
+    "boe": 1.00,
+    "census.gov": 1.00,
+    "eia.gov": 1.00,
+    "nasdaqtrader": 1.00,
     "truthsocial": 0.95,   # primary but unstructured
     # tier 2: fast, reliable, occasionally derivative
     "cnbc": 0.85,
@@ -33,6 +38,9 @@ SOURCE_TIERS: dict[str, float] = {
     "barrons": 0.80,
     "axios": 0.80,
     "politico": 0.80,
+    "nytimes": 0.70,
+    "bbc": 0.70,
+    "guardian": 0.65,
     # tier 3: aggregators and syndicated recaps
     "yahoo": 0.60,
     "marketwatch": 0.65,
@@ -42,7 +50,8 @@ SOURCE_TIERS: dict[str, float] = {
     # tier 4: commentary, unverified
     "zerohedge": 0.40,
     "reddit": 0.25,
-    "x": 0.30,
+    "x.com": 0.30,
+    "twitter": 0.30,
     "blog": 0.25,
 }
 DEFAULT_SOURCE_WEIGHT = 0.45
@@ -129,10 +138,37 @@ NOISE_PHRASES: tuple[str, ...] = (
     "3 reasons", "5 reasons", "why you should", "outlook for",
     "poised to", "set to benefit", "in focus", "things to know",
     "recap", "wrap", "closing bell", "midday", "premarket movers",
+    "takeaways", "explainer:", "analysis:", "opinion:", "comment:",
     "week ahead", "look ahead", "reportedly", "rumor", "speculation",
     "denies report", "according to sources",
 )
 NOISE_PENALTY = 14
+
+# Central banks and agencies publish far more administrative output than
+# monetary news, and it lands on the same feed with the same authority. These
+# score a heavy penalty rather than a hard drop: an enforcement action against
+# a systemically important bank is worth seeing, one against a county bancorp
+# is not, and the magnitude and symbol signals separate them.
+ADMIN_PHRASES: tuple[str, ...] = (
+    "announces approval", "approval of the application", "approval of application",
+    "enforcement action", "announces termination", "terminates enforcement",
+    "task force", "leadership and objectives", "appoints", "reappoints",
+    "names as", "elects", "board of directors", "annual report",
+    "requests comment", "seeks comment", "call for papers", "working paper",
+    "conference", "symposium", "agenda", "advisory council",
+    "statistical release schedule", "technical note", "revised schedule",
+)
+ADMIN_PENALTY = 30
+
+# Content that is never a trade under any circumstances, whatever else it
+# matches. Dropped outright so it cannot be rescued by a magnitude bonus.
+BOILERPLATE_PHRASES: tuple[str, ...] = (
+    "media advisory", "speaking engagement", "speech schedule",
+    "latest numbers", "key takeaways", "takeaways from", "here are",
+    "what we learned", "in charts", "in pictures", "live updates",
+    "podcast", "newsletter", "watch live", "your questions answered",
+    "quiz", "obituary", "review of the week", "best of", "how to watch",
+)
 
 # Anything older than this (seconds) is stale for a trading alert; score is
 # decayed linearly to zero across the window.
